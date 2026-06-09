@@ -1,0 +1,104 @@
+name: build-std
+
+# Periodically scrape the official Go release feed and build a binary that
+# references as much of the stdlib as possible, for every recent Go version
+# that doesn't already have a GitHub Release, then publish them (one release
+# per Go version, tag "go<ver>").
+#
+#   plan_versions.sh   -> which versions still need building (dedup vs releases)
+#   generate_all.sh    -> per-target golang-std.<ver>.<goos>.<goarch> + symbols.txt
+#   publish_release.sh -> upload assets as the "go<ver>" GitHub Release
+
+on:
+  schedule:
+    # Daily at 06:17 UTC. New Go releases get picked up within a day; versions
+    # that already have a release are skipped by plan_versions.sh, so most runs
+    # plan nothing and the build job is skipped.
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Rebuild versions even if a release already exists'
+        type: boolean
+        default: false
+      limit:
+        description: 'How many most-recent stable versions to consider'
+        type: string
+        default: '6'
+
+# Releases are created via the GITHUB_TOKEN, which needs write access.
+permissions:
+  contents: write
+
+# Don't let an overlapping schedule + manual run stomp on each other; let the
+# in-flight run finish rather than cancelling a half-published release.
+concurrency:
+  group: build-std
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      any: ${{ steps.plan.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decide which versions to build
+        id: plan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LIMIT: ${{ inputs.limit || '6' }}
+          FORCE: ${{ inputs.force || 'false' }}
+        run: ./scripts/plan_versions.sh
+
+      # Stamp "Last checked: <date>" into the README every run. This is both the
+      # freshness indicator and the keepalive: a daily commit resets the 60-day
+      # inactivity timer that would otherwise disable the cron. Commits by
+      # GITHUB_TOKEN don't re-trigger workflows, so there's no loop.
+      - name: Stamp last-checked date in README
+        run: |
+          latest=$(curl -fsSL "https://go.dev/dl/?mode=json" \
+            | jq -r '[.[] | select(.stable)][0].version')
+          today=$(date -u +%Y-%m-%d)
+          line="Last checked: ${today} (latest stable: ${latest})"
+          sed -i "s#<!-- last-checked -->.*<!-- /last-checked -->#<!-- last-checked -->${line}<!-- /last-checked -->#" README.md
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: ${line}"
+            git pull --rebase --autostash || true
+            git push
+          fi
+
+  # One Linux job per version builds ALL targets by cross-compiling. The build
+  # is pure Go (cgo disabled), so no C toolchain is needed for windows/darwin —
+  # ubuntu does it all for free. One job per version => one release, no race.
+  build:
+    needs: plan
+    if: needs.plan.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # plan_versions.sh strips the leading "go", so version is e.g.
+        # "1.26.3" — exactly what setup-go wants.
+        version: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.version }}
+          cache: false
+
+      - name: Build all targets (cross-compile, pure Go)
+        run: bash ./generate_all.sh
+
+      - name: Publish release for go${{ matrix.version }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/publish_release.sh "go${{ matrix.version }}"

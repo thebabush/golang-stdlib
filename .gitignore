@@ -1,0 +1,6 @@
+# Generated build output — never committed (see AGENTS.md)
+/output/
+
+# Generator binary built by generate_all.sh / score.sh
+/gen
+/gen.exe
