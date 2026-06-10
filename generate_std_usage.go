@@ -17,66 +17,56 @@ import (
 	"strings"
 )
 
-func run(cmd string, args ...string) (string, error) {
-	c := exec.Command(cmd, args...)
-	var out bytes.Buffer
-	c.Stdout = &out
-	c.Stderr = &out
-	if err := c.Run(); err != nil {
-		return "", fmt.Errorf("%v: %s", err, out.String())
-	}
-	return out.String(), nil
-}
-
 type pkgInfo struct {
-	Dir     string
-	GoFiles []string
+	ImportPath string
+	Dir        string
+	GoFiles    []string
 }
 
-func listPackages() ([]string, error) {
-	out, err := run("go", "list", "std")
-	if err != nil {
-		return nil, err
+// listStdPackages returns every standard-library package (with its source
+// files resolved to absolute paths) in a single `go list` invocation.
+// Previously this shelled out once per package — ~360 subprocesses — which
+// dominated the generator's runtime; the streamed form is ~40x faster.
+func listStdPackages() ([]pkgInfo, error) {
+	c := exec.Command("go", "list", "-json", "std")
+	var out, errb bytes.Buffer
+	c.Stdout = &out
+	c.Stderr = &errb
+	if err := c.Run(); err != nil {
+		return nil, fmt.Errorf("%v: %s", err, errb.String())
 	}
-	lines := strings.Fields(out)
-	var pkgs []string
-	for _, p := range lines {
-		if strings.Contains(p, "/internal/") || strings.HasPrefix(p, "internal/") || strings.HasSuffix(p, "/internal") {
+	var pkgs []pkgInfo
+	dec := json.NewDecoder(&out)
+	for dec.More() {
+		var p pkgInfo
+		if err := dec.Decode(&p); err != nil {
+			return nil, err
+		}
+		if skipPackage(p.ImportPath) {
 			continue
 		}
-		if strings.Contains(p, "/vendor/") || strings.HasPrefix(p, "vendor/") {
-			continue
-		}
-		if strings.HasPrefix(p, "cmd/") || p == "cmd" {
-			continue
-		}
-		if p == "runtime/cgo" {
-			continue
-		}
-		if p == "runtime/race" {
-			continue
-		}
-		if p == "plugin" && os.Getenv("GOOS") != "linux" {
-			continue
+		for i, f := range p.GoFiles {
+			p.GoFiles[i] = filepath.Join(p.Dir, f)
 		}
 		pkgs = append(pkgs, p)
 	}
 	return pkgs, nil
 }
 
-func packageInfo(pkg string) (pkgInfo, error) {
-	out, err := run("go", "list", "-json", pkg)
-	if err != nil {
-		return pkgInfo{}, err
+func skipPackage(p string) bool {
+	switch {
+	case strings.Contains(p, "/internal/") || strings.HasPrefix(p, "internal/") || strings.HasSuffix(p, "/internal"):
+		return true
+	case strings.Contains(p, "/vendor/") || strings.HasPrefix(p, "vendor/"):
+		return true
+	case strings.HasPrefix(p, "cmd/") || p == "cmd":
+		return true
+	case p == "runtime/cgo", p == "runtime/race":
+		return true
+	case p == "plugin" && os.Getenv("GOOS") != "linux":
+		return true
 	}
-	var info pkgInfo
-	if err := json.Unmarshal([]byte(out), &info); err != nil {
-		return pkgInfo{}, err
-	}
-	for i, f := range info.GoFiles {
-		info.GoFiles[i] = filepath.Join(info.Dir, f)
-	}
-	return info, nil
+	return false
 }
 
 func sanitizeAlias(pkg string) string {
@@ -91,11 +81,15 @@ func sanitizeAlias(pkg string) string {
 }
 
 type export struct {
-	kind     string
-	name     string
-	generic  bool
-	genKinds []string
-	genOK    bool
+	kind    string
+	name    string
+	generic bool
+	genOK   bool
+	// type arguments to instantiate a generic with, one per type parameter.
+	// Two parallel flavours give two instantiations (more symbol coverage)
+	// where the constraint admits both; they're equal otherwise.
+	typeArgs1 []string
+	typeArgs2 []string
 }
 
 func isMapConstraint(e ast.Expr) bool {
@@ -118,41 +112,130 @@ func isSliceConstraint(e ast.Expr) bool {
 	return false
 }
 
-func simpleConstraint(e ast.Expr) bool {
+// isTypeSetElement reports whether an embedded interface element is a type-set
+// term (a union, or a ~T approximation) rather than an embedded method
+// interface.
+func isTypeSetElement(e ast.Expr) bool {
 	switch t := e.(type) {
-	case *ast.Ident:
-		// A bare builtin identifier (Obj == nil) like `any` or `comparable` is
-		// satisfied by our canned `int`/`string` instantiation. `error` is the
-		// exception: it's also a bare builtin but an interface, so int/string
-		// don't satisfy it — skip those generics rather than emit broken code.
-		return t.Obj == nil && t.Name != "error"
-	case *ast.UnaryExpr:
-		if t.Op == token.TILDE {
-			if id, ok := t.X.(*ast.Ident); ok {
-				return id.Obj == nil
-			}
-		}
 	case *ast.BinaryExpr:
-		if t.Op == token.OR {
-			return simpleConstraint(t.X) && simpleConstraint(t.Y)
-		}
+		return t.Op == token.OR
+	case *ast.UnaryExpr:
+		return t.Op == token.TILDE
 	case *ast.ParenExpr:
-		return simpleConstraint(t.X)
-	case *ast.SelectorExpr:
-		if id, ok := t.X.(*ast.Ident); ok {
-			if id.Name == "constraints" || id.Name == "cmp" {
-				return true
-			}
-		}
+		return isTypeSetElement(t.X)
 	}
 	return false
 }
 
-func supportedConstraint(e ast.Expr) bool {
-	if isMapConstraint(e) || isSliceConstraint(e) {
-		return true
+// firstTerm returns a concrete type name drawn from a type-set element,
+// stripping a leading ~ and descending unions left-most-first. The result is
+// guaranteed to be a member of the set, so it's a safe type argument.
+func firstTerm(e ast.Expr) string {
+	switch t := e.(type) {
+	case *ast.BinaryExpr:
+		if t.Op == token.OR {
+			return firstTerm(t.X)
+		}
+	case *ast.UnaryExpr:
+		if t.Op == token.TILDE {
+			return exprString(t.X)
+		}
+	case *ast.ParenExpr:
+		return firstTerm(t.X)
 	}
-	return simpleConstraint(e)
+	return exprString(e)
+}
+
+// interfaceTypeArg picks a type argument for an interface constraint. If the
+// interface carries a type set (unions / ~T), it returns a member of that set.
+// Otherwise it's a pure method set, and the interface itself (named by self) is
+// a valid argument. ok is false when neither applies (self == "").
+func interfaceTypeArg(it *ast.InterfaceType, self string) (string, bool) {
+	for _, f := range it.Methods.List {
+		if len(f.Names) > 0 {
+			continue // a method
+		}
+		if isTypeSetElement(f.Type) {
+			return firstTerm(f.Type), true
+		}
+	}
+	if self != "" {
+		return self, true
+	}
+	return "", false
+}
+
+// typeArg resolves the type argument(s) for one type parameter's constraint,
+// in two parallel flavours. typeDecls resolves in-package constraint names;
+// alias qualifies an in-package interface when it's used as its own argument.
+// ok is false when no nameable satisfying type is found (the generic is skipped).
+func typeArg(c ast.Expr, typeDecls map[string]*ast.InterfaceType, alias string) (a1, a2 string, ok bool) {
+	if isMapConstraint(c) {
+		return "map[int]int", "map[string]string", true
+	}
+	if isSliceConstraint(c) {
+		return "[]int", "[]string", true
+	}
+	switch t := c.(type) {
+	case *ast.Ident:
+		switch t.Name {
+		case "any", "comparable":
+			return "int", "string", true
+		case "error":
+			// error is an interface: it satisfies its own method-set constraint.
+			return "error", "error", true
+		}
+		// In-package named constraint (Obj != nil), e.g. cmp.Ordered, rand.intType.
+		if it, found := typeDecls[t.Name]; found {
+			if arg, good := interfaceTypeArg(it, alias+"."+t.Name); good {
+				return arg, arg, true
+			}
+		}
+		return "", "", false
+	case *ast.UnaryExpr:
+		if t.Op == token.TILDE {
+			return "int", "string", true
+		}
+	case *ast.BinaryExpr:
+		if t.Op == token.OR {
+			return "int", "string", true
+		}
+	case *ast.ParenExpr:
+		return typeArg(t.X, typeDecls, alias)
+	case *ast.SelectorExpr:
+		if id, ok := t.X.(*ast.Ident); ok && (id.Name == "constraints" || id.Name == "cmp") {
+			return "int", "string", true
+		}
+		// An interface from another package used as a constraint (e.g.
+		// hash.Hash): an interface satisfies its own method-set constraint.
+		s := exprString(c)
+		return s, s, true
+	case *ast.InterfaceType:
+		if arg, good := interfaceTypeArg(t, ""); good {
+			return arg, arg, true
+		}
+	}
+	return "", "", false
+}
+
+// resolveTypeArgs computes type arguments for every type parameter of a generic
+// declaration. ok is false if any constraint can't be satisfied.
+func resolveTypeArgs(tparams *ast.FieldList, typeDecls map[string]*ast.InterfaceType, alias string) (args1, args2 []string, ok bool) {
+	for _, tp := range tparams.List {
+		a1, a2, good := typeArg(tp.Type, typeDecls, alias)
+		if !good {
+			return nil, nil, false
+		}
+		n := len(tp.Names)
+		if n == 0 {
+			n = 1
+		}
+		for i := 0; i < n; i++ {
+			args1 = append(args1, a1)
+			args2 = append(args2, a2)
+		}
+	}
+	return args1, args2, true
 }
 
 func exprString(e ast.Expr) string {
@@ -236,15 +319,55 @@ func parseMethods(info pkgInfo, alias string) ([]string, error) {
 	return methods, nil
 }
 
-func parseExports(info pkgInfo) ([]export, export, error) {
+// collectInterfaceDecls maps every in-package type name to its interface
+// definition (exported or not), so constraint identifiers like cmp.Ordered or
+// rand.intType can be resolved when choosing a generic's type arguments.
+func collectInterfaceDecls(files []*ast.File) map[string]*ast.InterfaceType {
+	decls := make(map[string]*ast.InterfaceType)
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				continue
+			}
+			for _, sp := range gd.Specs {
+				ts := sp.(*ast.TypeSpec)
+				if it, ok := ts.Type.(*ast.InterfaceType); ok {
+					decls[ts.Name.Name] = it
+				}
+			}
+		}
+	}
+	return decls
+}
+
+// genericArgs fills in the type arguments (or marks genOK=false) for a generic
+// declaration's type parameters.
+func genericArgs(e *export, tparams *ast.FieldList, typeDecls map[string]*ast.InterfaceType, alias string) {
+	e.generic = true
+	args1, args2, ok := resolveTypeArgs(tparams, typeDecls, alias)
+	if !ok {
+		e.genOK = false
+		return
+	}
+	e.typeArgs1 = args1
+	e.typeArgs2 = args2
+}
+
+func parseExports(info pkgInfo, alias string) ([]export, export, error) {
 	var exports []export
 	var first export
 	fs := token.NewFileSet()
+	var files []*ast.File
 	for _, file := range info.GoFiles {
 		f, err := parser.ParseFile(fs, file, nil, 0)
 		if err != nil {
 			continue
 		}
+		files = append(files, f)
+	}
+	typeDecls := collectInterfaceDecls(files)
+	for _, f := range files {
 		for _, decl := range f.Decls {
 			switch d := decl.(type) {
 			case *ast.GenDecl:
@@ -269,21 +392,7 @@ func parseExports(info pkgInfo) ([]export, export, error) {
 						if ts.Name.IsExported() {
 							e := export{kind: kind, name: ts.Name.Name, genOK: true}
 							if ts.TypeParams != nil && len(ts.TypeParams.List) > 0 {
-								e.generic = true
-								for _, tp := range ts.TypeParams.List {
-									kind := "simple"
-									if isMapConstraint(tp.Type) {
-										kind = "map"
-									} else if isSliceConstraint(tp.Type) {
-										kind = "slice"
-									}
-									if !supportedConstraint(tp.Type) {
-										e.genOK = false
-									}
-									for range tp.Names {
-										e.genKinds = append(e.genKinds, kind)
-									}
-								}
+								genericArgs(&e, ts.TypeParams, typeDecls, alias)
 							}
 							exports = append(exports, e)
 							if first.name == "" {
@@ -300,24 +409,9 @@ func parseExports(info pkgInfo) ([]export, export, error) {
 				if !d.Name.IsExported() {
 					continue
 				}
-				// d.Recv is nil so no receiver checks needed
 				e := export{kind: "func", name: d.Name.Name, genOK: true}
 				if d.Type.TypeParams != nil && len(d.Type.TypeParams.List) > 0 {
-					e.generic = true
-					for _, tp := range d.Type.TypeParams.List {
-						kind := "simple"
-						if isMapConstraint(tp.Type) {
-							kind = "map"
-						} else if isSliceConstraint(tp.Type) {
-							kind = "slice"
-						}
-						if !supportedConstraint(tp.Type) {
-							e.genOK = false
-						}
-						for range tp.Names {
-							e.genKinds = append(e.genKinds, kind)
-						}
-					}
+					genericArgs(&e, d.Type.TypeParams, typeDecls, alias)
 				}
 				exports = append(exports, e)
 				if first.name == "" {
@@ -355,18 +449,7 @@ func assignment(alias string, e export) (string, []string) {
 			if !e.genOK {
 				return fmt.Sprintf("// %s.%s requires type parameters, skipping", alias, e.name), nil
 			}
-			types := make([]string, len(e.genKinds))
-			for i, k := range e.genKinds {
-				switch k {
-				case "map":
-					types[i] = "map[int]int"
-				case "slice":
-					types[i] = "[]int"
-				default:
-					types[i] = "int"
-				}
-			}
-			return fmt.Sprintf("type _ = %s.%s[%s]", alias, e.name, strings.Join(types, ", ")), nil
+			return fmt.Sprintf("type _ = %s.%s[%s]", alias, e.name, strings.Join(e.typeArgs1, ", ")), nil
 		}
 		return fmt.Sprintf("type _ = %s.%s", alias, e.name), nil
 	case "func":
@@ -374,25 +457,12 @@ func assignment(alias string, e export) (string, []string) {
 			if !e.genOK {
 				return fmt.Sprintf("// %s.%s requires type parameters, skipping", alias, e.name), nil
 			}
-			types1 := make([]string, len(e.genKinds))
-			types2 := make([]string, len(e.genKinds))
-			for i, k := range e.genKinds {
-				switch k {
-				case "map":
-					types1[i] = "map[int]int"
-					types2[i] = "map[string]string"
-				case "slice":
-					types1[i] = "[]int"
-					types2[i] = "[]string"
-				default:
-					types1[i] = "int"
-					types2[i] = "string"
-				}
+			insts := []string{fmt.Sprintf("%s.%s[%s]", alias, e.name, strings.Join(e.typeArgs1, ", "))}
+			// Emit a second instantiation only when it differs (more coverage).
+			if strings.Join(e.typeArgs2, ",") != strings.Join(e.typeArgs1, ",") {
+				insts = append(insts, fmt.Sprintf("%s.%s[%s]", alias, e.name, strings.Join(e.typeArgs2, ", ")))
 			}
-			return "", []string{
-				fmt.Sprintf("%s.%s[%s]", alias, e.name, strings.Join(types1, ", ")),
-				fmt.Sprintf("%s.%s[%s]", alias, e.name, strings.Join(types2, ", ")),
-			}
+			return "", insts
 		}
 		return "", []string{fmt.Sprintf("%s.%s", alias, e.name)}
 	}
@@ -427,7 +497,7 @@ func main() {
 	}
 	defer mainFile.Close()
 
-	pkgs, err := listPackages()
+	pkgs, err := listStdPackages()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -438,7 +508,8 @@ func main() {
 	var assigns []string
 	var fnEntries []string
 	aliasCount := make(map[string]int)
-	for _, pkg := range pkgs {
+	for _, info := range pkgs {
+		pkg := info.ImportPath
 		log.Printf("processing %s", pkg)
 		baseAlias := sanitizeAlias(pkg)
 		cnt := aliasCount[baseAlias]
@@ -454,14 +525,7 @@ func main() {
 			fmt.Fprintln(mainFile, aliasLine)
 			continue
 		}
-		info, err := packageInfo(pkg)
-		if err != nil {
-			aliasLine = fmt.Sprintf("    _ \"%s\"", pkg)
-			assigns = append(assigns, fmt.Sprintf("// failed to load %s: %v", pkg, err))
-			fmt.Fprintln(mainFile, aliasLine)
-			continue
-		}
-		exports, first, err := parseExports(info)
+		exports, first, err := parseExports(info, alias)
 		if err != nil {
 			aliasLine = fmt.Sprintf("    _ \"%s\"", pkg)
 			assigns = append(assigns, fmt.Sprintf("// failed to parse %s: %v", pkg, err))
