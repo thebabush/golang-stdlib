@@ -1,12 +1,13 @@
-# Versions to NEVER attempt to build. Both planners drop these from the matrix,
-# so the scheduled build and backfills skip them.
+# Skip specific (version, target) builds. generate_all.sh skips just the listed
+# targets for that version and still builds the rest, so one broken platform
+# doesn't drop the whole release.
 #
-# Format: one version per line. "#" starts a comment; blank lines are ignored;
-# the leading "go" is optional ("1.23.0" and "go1.23.0" are equivalent).
+# Format: "<version> <goos/goarch> [<goos/goarch>...]" per line. "#" starts a
+# comment; blank lines are ignored; the leading "go" on the version is optional.
 #
 # go1.23.0–go1.23.2: windows/amd64 fails to link with a nosplit stack overflow
-#   (a toolchain regression fixed in go1.23.3). The other three targets build
-#   fine, but generate_all.sh is all-or-nothing, so we skip these entirely.
-1.23.0
-1.23.1
-1.23.2
+#   (toolchain regression fixed in go1.23.3). linux/amd64, linux/arm64 and
+#   darwin/arm64 build fine, so we only skip windows/amd64 for these.
+1.23.0 windows/amd64
+1.23.1 windows/amd64
+1.23.2 windows/amd64
