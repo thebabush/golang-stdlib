@@ -90,15 +90,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Skip the (expensive) cross-build when the release already exists — the
+      # planner dedups, but this also covers plan/build races and cheap re-runs
+      # of a partially-failed run. `force` rebuilds regardless.
+      - name: Skip if release already exists
+        id: guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ inputs.force }}" != "true" ] && gh release view "go${{ matrix.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "go${{ matrix.version }} already released — skipping build."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-go@v5
+        if: steps.guard.outputs.exists != 'true'
         with:
           go-version: ${{ matrix.version }}
           cache: false
 
       - name: Build all targets (cross-compile, pure Go)
+        if: steps.guard.outputs.exists != 'true'
         run: bash ./generate_all.sh
 
       - name: Publish release for go${{ matrix.version }}
+        if: steps.guard.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/publish_release.sh "go${{ matrix.version }}"
