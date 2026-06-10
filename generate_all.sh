@@ -25,9 +25,13 @@ prebuild=false
 # would emit broken bare-generic refs on >= 1.18). Mandatory, not an optimization.
 if [[ "$(printf '%s\n1.18\n' "$version" | sort -V | head -1)" != "1.18" ]]; then
     gensrc="./legacy/generate_std_usage.go"
+    tolerant=true # old toolchains have per-target quirks (e.g. pre-1.16
+                  # darwin/arm64 means iOS and needs cgo); skip failing targets
+                  # and ship the rest rather than dropping the whole version.
     echo "Using LEGACY (generics-free) generator for ${version}" >&2
 else
     gensrc="./generate_std_usage.go"
+    tolerant=false # 1.18+: every target must build, so regressions surface.
 fi
 
 # Build the generator natively for the host; it cross-builds each target.
@@ -59,11 +63,24 @@ for target in "${TARGETS[@]}"; do
     fi
     outdir="output/${goos}/${goarch}"
     mkdir -p "$outdir"
+    ok=true
     if $prebuild; then
         echo "Pre-building stdlib for ${goos}/${goarch} (Go ${version} < 1.20)..."
-        GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go install std >/dev/null
+        GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go install std >/dev/null || ok=false
     fi
-    echo "Generating ${goos}/${goarch} (${version})..."
-    env GOOS="$goos" GOARCH="$goarch" "$gen" "$outdir" "go.${version}.${goos}.${goarch}"
-    echo "Wrote binary into $outdir/"
+    if $ok; then
+        echo "Generating ${goos}/${goarch} (${version})..."
+        env GOOS="$goos" GOARCH="$goarch" "$gen" "$outdir" "go.${version}.${goos}.${goarch}" || ok=false
+    fi
+    if $ok; then
+        echo "Wrote binary into $outdir/"
+    else
+        rm -rf "$outdir" # drop partial output so publish doesn't ship an orphan target
+        if $tolerant; then
+            echo "WARNING: ${goos}/${goarch} failed for ${version} — skipping (tolerant lane)" >&2
+            continue
+        fi
+        echo "ERROR: ${goos}/${goarch} build failed for ${version}" >&2
+        exit 1
+    fi
 done
