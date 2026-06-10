@@ -73,8 +73,16 @@ if [[ "$FORCE" != "true" ]]; then
   existing=$(gh release list --limit 1000 --json tagName -q '.[].tagName' 2>/dev/null || true)
 fi
 
+# shellcheck source=scripts/skiplist.sh
+source "$(dirname "$0")/skiplist.sh"
+load_skips
+
 needed=()
 for v in "${candidates[@]}"; do # v is like "go1.23.11"
+  if is_skipped "$v"; then
+    echo "skip $v (in skip-versions.txt)" >&2
+    continue
+  fi
   if [[ "$FORCE" != "true" ]] && grep -qxF "$v" <<<"$existing"; then
     echo "skip $v (release already exists)" >&2
     continue

@@ -1,0 +1,12 @@
+# Versions to NEVER attempt to build. Both planners drop these from the matrix,
+# so the scheduled build and backfills skip them.
+#
+# Format: one version per line. "#" starts a comment; blank lines are ignored;
+# the leading "go" is optional ("1.23.0" and "go1.23.0" are equivalent).
+#
+# go1.23.0–go1.23.2: windows/amd64 fails to link with a nosplit stack overflow
+#   (a toolchain regression fixed in go1.23.3). The other three targets build
+#   fine, but generate_all.sh is all-or-nothing, so we skip these entirely.
+1.23.0
+1.23.1
+1.23.2
