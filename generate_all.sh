@@ -20,10 +20,20 @@ load_skips
 prebuild=false
 [[ "$(printf '%s\n1.20\n' "$version" | sort -V | head -1)" != "1.20" ]] && prebuild=true
 
+# Pick the generator by version: the main one uses go/types generics APIs and
+# only compiles on Go >= 1.18; the legacy one is generics-free for < 1.18 (and
+# would emit broken bare-generic refs on >= 1.18). Mandatory, not an optimization.
+if [[ "$(printf '%s\n1.18\n' "$version" | sort -V | head -1)" != "1.18" ]]; then
+    gensrc="./legacy/generate_std_usage.go"
+    echo "Using LEGACY (generics-free) generator for ${version}" >&2
+else
+    gensrc="./generate_std_usage.go"
+fi
+
 # Build the generator natively for the host; it cross-builds each target.
 ext=$(go env GOEXE)
 gen="$PWD/gen${ext}"
-go build -o "$gen" ./generate_std_usage.go
+go build -o "$gen" "$gensrc"
 
 TARGETS=(
     "linux amd64"

@@ -22,9 +22,10 @@ set -euo pipefail
 : "${FROM:=}"
 : "${COUNT:=10}"
 : "${FORCE:=false}"
-: "${FLOOR:=1.18}" # generator source needs Go >= 1.18 (go/types generics APIs).
-                   # 1.18/1.19 also need generate_all.sh to pre-build the target
-                   # stdlib (go install std) so go/importer can read cross targets.
+: "${FLOOR:=1.5}"  # go/types (used by both generators) landed in Go 1.5; below
+                   # that nothing compiles. generate_all.sh auto-picks the legacy
+                   # generics-free generator for < 1.18. How far back actually
+                   # builds is left for CI to surface — adjust the skip list as needed.
 
 # Normalize a version to the release-tag form "go1.23.11".
 norm() { printf 'go%s' "${1#go}"; }
