@@ -16,7 +16,6 @@ import (
 	"bytes"
 	"fmt"
 	"go/importer"
-	"go/token"
 	"go/types"
 	"io/ioutil" // os.WriteFile is Go 1.16+; ioutil.WriteFile works on older toolchains
 	"log"
@@ -25,8 +24,6 @@ import (
 	"path/filepath"
 	"strings"
 )
-
-var fset = token.NewFileSet()
 
 func skipPackage(p string) bool {
 	switch {
@@ -96,7 +93,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	imp := importer.ForCompiler(fset, "gc", nil)
+	// importer.For (not ForCompiler, which is Go 1.12+) so this compiles on
+	// toolchains back to ~1.5. Still present (deprecated) in modern Go.
+	imp := importer.For("gc", nil)
 
 	alias := map[string]string{}
 	taken := map[string]bool{}
@@ -156,7 +155,7 @@ func main() {
 		}
 	}
 
-	var b strings.Builder
+	var b bytes.Buffer // bytes.Buffer (ancient), not strings.Builder (Go 1.10+)
 	b.WriteString("package main\n\nimport (\n")
 	for _, pp := range pkgs {
 		if contributed[pp] {
