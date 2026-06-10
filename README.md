@@ -12,6 +12,6 @@ This repo contains helper scripts to build the Go standard library in different 
   method, instantiating generics across a shape-diverse pool of type arguments
   (validated with `go/types`) to maximize the distinct symbols in the binary.
 - `generate_all.sh` cross-compiles the generator's output for every target and
-  places the binaries under `./output/<GOOS>/<GOARCH>/golang-std.$GO_VERSION.$GOOS.$GOARCH`.
+  places the binaries under `./output/<GOOS>/<GOARCH>/go.$GO_VERSION.$GOOS.$GOARCH`.
   The build is pure Go (cgo disabled), so a single Linux host builds all
   targets with no C toolchain.

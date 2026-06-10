@@ -6,7 +6,7 @@ name: build-std
 # per Go version, tag "go<ver>").
 #
 #   plan_versions.sh   -> which versions still need building (dedup vs releases)
-#   generate_all.sh    -> per-target golang-std.<ver>.<goos>.<goarch> + symbols.txt
+#   generate_all.sh    -> per-target go.<ver>.<goos>.<goarch> + symbols.txt
 #   publish_release.sh -> upload assets as the "go<ver>" GitHub Release
 
 on:
@@ -98,9 +98,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ "${{ inputs.force }}" != "true" ] && gh release view "go${{ matrix.version }}" >/dev/null 2>&1; then
+          if [ "${{ inputs.force }}" != "true" ] && gh release view "${{ matrix.version }}" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "go${{ matrix.version }} already released — skipping build."
+            echo "${{ matrix.version }} already released — skipping build."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
@@ -115,8 +115,8 @@ jobs:
         if: steps.guard.outputs.exists != 'true'
         run: bash ./generate_all.sh
 
-      - name: Publish release for go${{ matrix.version }}
+      - name: Publish release for ${{ matrix.version }}
         if: steps.guard.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./scripts/publish_release.sh "go${{ matrix.version }}"
+        run: ./scripts/publish_release.sh "${{ matrix.version }}"

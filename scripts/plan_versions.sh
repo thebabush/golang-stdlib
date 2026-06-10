@@ -49,11 +49,11 @@ for v in "${candidates[@]}"; do # v is like "go1.26.3"
     echo "skip $v (in skip-versions.txt)" >&2
     continue
   fi
-  if [[ "$FORCE" != "true" ]] && grep -qxF "$v" <<<"$existing"; then
+  if [[ "$FORCE" != "true" ]] && grep -qxF "${v#go}" <<<"$existing"; then
     echo "skip $v (release already exists)" >&2
     continue
   fi
-  needed+=("${v#go}") # strip leading "go" -> "1.26.3" for setup-go
+  needed+=("${v#go}") # strip leading "go" -> "1.26.3" for setup-go / tag
 done
 
 if [[ ${#needed[@]} -eq 0 ]]; then

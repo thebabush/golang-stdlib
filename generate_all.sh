@@ -5,6 +5,7 @@
 set -euo pipefail
 
 version=$(go version | awk '{print $3}')
+version="${version#go}" # "go1.26.4" -> "1.26.4" (no "go" prefix in artifact names)
 
 # Build the generator natively for the host; it cross-builds each target.
 ext=$(go env GOEXE)
@@ -23,6 +24,6 @@ for target in "${TARGETS[@]}"; do
     outdir="output/${goos}/${goarch}"
     mkdir -p "$outdir"
     echo "Generating ${goos}/${goarch} (${version})..."
-    env GOOS="$goos" GOARCH="$goarch" "$gen" "$outdir" "golang-std.${version}.${goos}.${goarch}"
+    env GOOS="$goos" GOARCH="$goarch" "$gen" "$outdir" "go.${version}.${goos}.${goarch}"
     echo "Wrote binary into $outdir/"
 done

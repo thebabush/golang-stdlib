@@ -2,12 +2,12 @@
 # Publish the generated stdlib binaries for one Go version as a GitHub Release.
 #
 # generate_all.sh writes, per target:
-#   output/<GOOS>/<GOARCH>/golang-std.<goversion>.<GOOS>.<GOARCH>[.exe]
+#   output/<GOOS>/<GOARCH>/go.<version>.<GOOS>.<GOARCH>[.exe]
 #   output/<GOOS>/<GOARCH>/symbols.txt
 # Binary names already encode GOOS/GOARCH; symbols.txt does not, so it is
 # renamed per platform before upload to avoid asset collisions.
 #
-# Usage: publish_release.sh <tag>     # tag is the Go version, e.g. "go1.26.3"
+# Usage: publish_release.sh <tag>     # tag is the bare Go version, e.g. "1.26.3"
 # Env:   GH_TOKEN  token with contents:write (set in CI)
 set -euo pipefail
 
@@ -18,7 +18,7 @@ trap 'rm -rf "$dist"' EXIT
 
 shopt -s nullglob
 found=0
-for bin in output/*/*/golang-std.*; do
+for bin in output/*/*/go.*; do
   cp "$bin" "$dist/$(basename "$bin")"
   found=1
 done
