@@ -56,15 +56,29 @@ retry() {
   done
 }
 
+# Mark this release as "Latest" only if it's the highest version we have.
+# GitHub can't infer that from the non-semver "go<ver>" tags, so left to itself
+# it picks the most-recently-created release — which is wrong during backfills
+# (older versions get published later). sort -V orders the go tags correctly.
+all_tags=$(gh release list --limit 1000 --json tagName -q '.[].tagName' 2>/dev/null || true)
+newest=$(printf '%s\n%s\n' "$all_tags" "$tag" | grep -v '^$' | sort -uV | tail -1)
+if [[ "$tag" == "$newest" ]]; then
+  latest=true
+else
+  latest=false
+fi
+echo "mark latest=$latest for $tag (newest is $newest)" >&2
+
 # Create the release, or upload into it if it already exists. The trailing
 # `|| upload` covers the create-vs-create race (two jobs publish the same tag):
 # whichever loses the create falls back to clobbering assets in.
 publish() {
   if gh release view "$tag" >/dev/null 2>&1; then
     gh release upload "$tag" "$dist"/* --clobber
+    gh release edit "$tag" --latest="$latest"
   else
-    gh release create "$tag" "$dist"/* --title "$tag" --notes "$notes" ||
-      gh release upload "$tag" "$dist"/* --clobber
+    gh release create "$tag" "$dist"/* --title "$tag" --notes "$notes" --latest="$latest" ||
+      { gh release upload "$tag" "$dist"/* --clobber && gh release edit "$tag" --latest="$latest"; }
   fi
 }
 
