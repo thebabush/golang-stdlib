@@ -72,6 +72,14 @@ for target in "${TARGETS[@]}"; do
         echo "Generating ${goos}/${goarch} (${version})..."
         env GOOS="$goos" GOARCH="$goarch" "$gen" "$outdir" "go.${version}.${goos}.${goarch}" || ok=false
     fi
+    # Quality gate: an empty symbols.txt means the importer enumerated nothing
+    # (e.g. go1.9 quirks) and the binary is a hollow runtime-only shell. Treat it
+    # as a failure so we never publish a hollow release (and never try to upload a
+    # 0-byte asset, which GitHub rejects with HTTP 400).
+    if $ok && [ ! -s "$outdir/symbols.txt" ]; then
+        echo "WARNING: ${goos}/${goarch} for ${version} produced empty symbols.txt (hollow build)" >&2
+        ok=false
+    fi
     if $ok; then
         echo "Wrote binary into $outdir/"
     else
