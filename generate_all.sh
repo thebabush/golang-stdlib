@@ -5,7 +5,8 @@
 set -euo pipefail
 
 version=$(go version | awk '{print $3}')
-version="${version#go}" # "go1.26.4" -> "1.26.4" (no "go" prefix in artifact names)
+version="${version#go}"                                      # "go1.26.4" -> "1.26.4"
+[[ "$version" =~ ^[0-9]+\.[0-9]+$ ]] && version="${version}.0" # "1.20" -> "1.20.0"
 
 # Per-(version, target) skip list — drop only the broken platform, build the rest.
 # shellcheck source=scripts/skiplist.sh

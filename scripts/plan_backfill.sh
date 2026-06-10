@@ -22,6 +22,7 @@ set -euo pipefail
 : "${FROM:=}"
 : "${COUNT:=10}"
 : "${FORCE:=false}"
+: "${FLOOR:=1.18}" # never build below this — the generator needs Go >= 1.18 to compile
 
 # Normalize a version to the release-tag form "go1.23.11".
 norm() { printf 'go%s' "${1#go}"; }
@@ -75,11 +76,19 @@ fi
 
 needed=()
 for v in "${candidates[@]}"; do # v is like "go1.23.11"
-  if [[ "$FORCE" != "true" ]] && grep -qxF "${v#go}" <<<"$existing"; then
+  vbare="${v#go}"
+  # Pre-1.21 ".0" releases are listed as "go1.20" (no patch); normalize to
+  # 1.20.0 so the tag is consistent and setup-go pins the exact release.
+  [[ "$vbare" =~ ^[0-9]+\.[0-9]+$ ]] && vbare="${vbare}.0"
+  if [[ -n "$FLOOR" && "$(printf '%s\n%s\n' "$vbare" "$FLOOR" | sort -V | head -1)" != "$FLOOR" ]]; then
+    echo "skip $v (below floor $FLOOR)" >&2
+    continue
+  fi
+  if [[ "$FORCE" != "true" ]] && grep -qxF "$vbare" <<<"$existing"; then
     echo "skip $v (release already exists)" >&2
     continue
   fi
-  needed+=("${v#go}") # strip leading "go" -> "1.23.11" for setup-go / tag
+  needed+=("$vbare") # bare "1.23.11" for setup-go / tag
 done
 
 if [[ ${#needed[@]} -eq 0 ]]; then
