@@ -35,6 +35,11 @@ ext=$(go env GOEXE)
 gen="$PWD/gen${ext}"
 go build -o "$gen" "$gensrc"
 
+# Targets this toolchain actually supports (e.g. darwin/arm64 only exists from
+# Go 1.16). Auto-skip the rest so old versions ship their valid arches instead
+# of failing the whole job.
+supported=$(go tool dist list)
+
 TARGETS=(
     "linux amd64"
     "linux arm64"
@@ -44,6 +49,10 @@ TARGETS=(
 
 for target in "${TARGETS[@]}"; do
     IFS=' ' read -r goos goarch <<<"$target"
+    if ! grep -qx "${goos}/${goarch}" <<<"$supported"; then
+        echo "Skipping ${goos}/${goarch} for ${version} (not supported by this toolchain)" >&2
+        continue
+    fi
     if is_skipped "$version" "${goos}/${goarch}"; then
         echo "Skipping ${goos}/${goarch} for ${version} (in skip-versions.txt)" >&2
         continue

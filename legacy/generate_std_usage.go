@@ -18,6 +18,7 @@ import (
 	"go/importer"
 	"go/token"
 	"go/types"
+	"io/ioutil" // os.WriteFile is Go 1.16+; ioutil.WriteFile works on older toolchains
 	"log"
 	"os"
 	"os/exec"
@@ -87,7 +88,7 @@ func main() {
 	if len(os.Args) > 2 {
 		binName = os.Args[2]
 	}
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
+	if err := os.MkdirAll(outDir, 0755); err != nil {
 		log.Fatal(err)
 	}
 
@@ -171,11 +172,11 @@ func main() {
 	b.WriteString("}\n\n//go:noinline\nfunc keep(_ interface{}) {}\nfunc init() { keep(fns) }\n\nfunc main() {}\n")
 
 	symsPath := filepath.Join(outDir, "symbols.txt")
-	if err := os.WriteFile(symsPath, syms.Bytes(), 0o644); err != nil {
+	if err := ioutil.WriteFile(symsPath, syms.Bytes(), 0644); err != nil {
 		log.Fatal(err)
 	}
 	mainPath := filepath.Join(outDir, "main.go")
-	if err := os.WriteFile(mainPath, []byte(b.String()), 0o644); err != nil {
+	if err := ioutil.WriteFile(mainPath, []byte(b.String()), 0644); err != nil {
 		log.Fatal(err)
 	}
 	fmt.Printf("wrote %s and %s (%d fn/method refs)\n", symsPath, mainPath, len(fnEntries))
