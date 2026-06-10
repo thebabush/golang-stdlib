@@ -121,7 +121,11 @@ func isSliceConstraint(e ast.Expr) bool {
 func simpleConstraint(e ast.Expr) bool {
 	switch t := e.(type) {
 	case *ast.Ident:
-		return t.Obj == nil
+		// A bare builtin identifier (Obj == nil) like `any` or `comparable` is
+		// satisfied by our canned `int`/`string` instantiation. `error` is the
+		// exception: it's also a bare builtin but an interface, so int/string
+		// don't satisfy it — skip those generics rather than emit broken code.
+		return t.Obj == nil && t.Name != "error"
 	case *ast.UnaryExpr:
 		if t.Op == token.TILDE {
 			if id, ok := t.X.(*ast.Ident); ok {
