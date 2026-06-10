@@ -1,0 +1,85 @@
+name: backfill-std
+
+# Manual backfill of stdlib builds for older Go versions. Separate from the
+# scheduled build-std workflow: instead of "newest versions lacking a release",
+# this lets you target an explicit list, or a window counting backwards from a
+# given version. One release per version (tag "go<ver>"), same as build-std.
+#
+#   plan_backfill.sh   -> choose versions (VERSIONS | FROM+COUNT | COUNT), dedup
+#   generate_all.sh    -> per-target golang-std.<ver>.<goos>.<goarch> + symbols.txt
+#   publish_release.sh -> upload assets as the "go<ver>" GitHub Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: 'Explicit versions, space/comma separated (e.g. "1.23.11 1.24.0"). Overrides from/count.'
+        type: string
+        default: ''
+      from:
+        description: 'Count backwards (older) from this version, e.g. "1.23.11"'
+        type: string
+        default: ''
+      count:
+        description: 'How many versions to build'
+        type: string
+        default: '10'
+      force:
+        description: 'Rebuild even if a release already exists'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: backfill-std
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      any: ${{ steps.plan.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Plan backfill
+        id: plan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSIONS: ${{ inputs.versions }}
+          FROM: ${{ inputs.from }}
+          COUNT: ${{ inputs.count }}
+          FORCE: ${{ inputs.force }}
+        run: ./scripts/plan_backfill.sh
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # Cap concurrent jobs: a backfill can be dozens of versions, and too many
+      # simultaneous GitHub Releases API calls trigger sporadic HTTP 401s.
+      max-parallel: 5
+      matrix:
+        # plan_backfill.sh strips the leading "go", so version is e.g.
+        # "1.23.11" — exactly what setup-go wants.
+        version: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.version }}
+          cache: false
+
+      - name: Build all targets (cross-compile, pure Go)
+        run: bash ./generate_all.sh
+
+      - name: Publish release for go${{ matrix.version }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/publish_release.sh "go${{ matrix.version }}"
