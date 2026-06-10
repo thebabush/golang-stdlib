@@ -22,9 +22,9 @@ set -euo pipefail
 : "${FROM:=}"
 : "${COUNT:=10}"
 : "${FORCE:=false}"
-: "${FLOOR:=1.20}" # never build below this: go/importer can't load cross-target
-                   # export data before Go 1.20 (stdlib was precompiled host-only),
-                   # so 1.18/1.19 only import the host target and yield empty binaries.
+: "${FLOOR:=1.18}" # generator source needs Go >= 1.18 (go/types generics APIs).
+                   # 1.18/1.19 also need generate_all.sh to pre-build the target
+                   # stdlib (go install std) so go/importer can read cross targets.
 
 # Normalize a version to the release-tag form "go1.23.11".
 norm() { printf 'go%s' "${1#go}"; }

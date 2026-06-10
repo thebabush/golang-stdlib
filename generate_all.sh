@@ -13,6 +13,13 @@ version="${version#go}"                                      # "go1.26.4" -> "1.
 source "$(dirname "$0")/scripts/skiplist.sh"
 load_skips
 
+# Pre-1.20 ships precompiled stdlib only for the host arch, so go/importer (used
+# by the generator to enumerate the API) can't read cross-target export data. For
+# those versions, build the target's stdlib first so the importer has it. From
+# 1.20 the toolchain builds export data on demand, so this is unnecessary.
+prebuild=false
+[[ "$(printf '%s\n1.20\n' "$version" | sort -V | head -1)" != "1.20" ]] && prebuild=true
+
 # Build the generator natively for the host; it cross-builds each target.
 ext=$(go env GOEXE)
 gen="$PWD/gen${ext}"
@@ -33,6 +40,10 @@ for target in "${TARGETS[@]}"; do
     fi
     outdir="output/${goos}/${goarch}"
     mkdir -p "$outdir"
+    if $prebuild; then
+        echo "Pre-building stdlib for ${goos}/${goarch} (Go ${version} < 1.20)..."
+        GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go install std >/dev/null
+    fi
     echo "Generating ${goos}/${goarch} (${version})..."
     env GOOS="$goos" GOARCH="$goarch" "$gen" "$outdir" "go.${version}.${goos}.${goarch}"
     echo "Wrote binary into $outdir/"
