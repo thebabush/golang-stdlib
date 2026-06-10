@@ -22,10 +22,11 @@ set -euo pipefail
 : "${FROM:=}"
 : "${COUNT:=10}"
 : "${FORCE:=false}"
-: "${FLOOR:=1.5}"  # go/types (used by both generators) landed in Go 1.5; below
-                   # that nothing compiles. generate_all.sh auto-picks the legacy
-                   # generics-free generator for < 1.18. How far back actually
-                   # builds is left for CI to surface — adjust the skip list as needed.
+: "${FLOOR:=1.7}" # practical floor. go/types entered the stdlib in 1.5, but on
+                   # 1.6 and below go/importer enumerates nothing (hollow builds),
+                   # and go tool dist list / default GOPATH don't exist. 1.7.0 is
+                   # the oldest that produces real binaries. generate_all.sh
+                   # auto-picks the legacy generics-free generator for < 1.18.
 
 # Normalize a version to the release-tag form "go1.23.11".
 norm() { printf 'go%s' "${1#go}"; }
