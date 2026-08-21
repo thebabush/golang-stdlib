@@ -346,8 +346,29 @@ func main() {
 						if !ok || !fn.Exported() {
 							continue
 						}
-						fnEntries = append(fnEntries, fmt.Sprintf("(*%s).%s", in.recv, fn.Name()))
-						add(pp)
+						// Go 1.27 added generic *methods* — the first in the
+						// stdlib is (*math/rand/v2.Rand).N. A method's own type
+						// params are a different axis from the receiver's
+						// (handled above), and a method expression naming one
+						// bare is "generic function without instantiation", which
+						// doesn't compile — so instantiate it exactly like a
+						// top-level generic func. Before 1.27 this branch never
+						// fires: methods couldn't carry type params at all.
+						msig := fn.Type().(*types.Signature)
+						if msig.TypeParams().Len() == 0 {
+							fnEntries = append(fnEntries, fmt.Sprintf("(*%s).%s", in.recv, fn.Name()))
+							add(pp)
+							continue
+						}
+						seen := map[string]bool{}
+						for _, targs := range validTuples(msig.TypeParams(), msig) {
+							ref := fmt.Sprintf("(*%s).%s[%s]", in.recv, fn.Name(), renderList(targs, qualifier))
+							if !seen[ref] {
+								seen[ref] = true
+								fnEntries = append(fnEntries, ref)
+								add(pp)
+							}
+						}
 					}
 				}
 			}
