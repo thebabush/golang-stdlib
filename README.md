@@ -1,6 +1,6 @@
 # turbo-golang
 
-<!-- last-checked -->Last checked: 2026-10-26 (latest stable: go1.27.3)<!-- /last-checked -->
+<!-- last-checked -->Last checked: 2026-10-27 (latest stable: go1.27.3)<!-- /last-checked -->
 
 This repo contains helper scripts to build the Go standard library in different formats.
 
